@@ -274,7 +274,9 @@ X_sub   <- X_scaled[idx_sub, ]
 # Mahalanobis distances
 mu_sub  <- colMeans(X_sub)
 cov_sub <- cov(X_sub)
-D2      <- mahalanobis(X_sub, mu_sub, cov_sub)
+# 协方差矩阵可能近奇异（有完全相关的列），用伪逆替代普通逆
+cov_inv <- MASS::ginv(cov_sub)
+D2      <- mahalanobis(X_sub, mu_sub, cov_inv, inverted = TRUE)
 
 p_dim   <- ncol(X_scaled)
 theo_q  <- qchisq(ppoints(length(D2)), df = p_dim)
