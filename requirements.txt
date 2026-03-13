@@ -1,0 +1,11 @@
+# STA437 Midterm Project — pinned dependencies
+# Install with: pip install -r requirements.txt
+numpy==2.4.3
+pandas==3.0.1
+scipy==1.17.1
+scikit-learn==1.5.2
+matplotlib==3.10.8
+seaborn==0.13.2
+factor_analyzer==0.5.1
+jupyter==1.1.1
+nbconvert==7.17.0

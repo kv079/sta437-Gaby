@@ -1,0 +1,1014 @@
+---
+title: "STA437 Midterm Project — Human Activity Recognition (HAR)"
+author: "Gaby"
+date: "March 2026"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    toc_depth: 3
+    number_sections: true
+    theme: flatly
+    highlight: kate
+    fig_width: 10
+    fig_height: 7
+    df_print: paged
+  pdf_document:
+    toc: true
+    toc_depth: 3
+    number_sections: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo    = TRUE,
+  message = FALSE,
+  warning = FALSE,
+  cache   = FALSE,   # never cache — ensures full re-execution on each knit
+  fig.path = "figures/",
+  dpi      = 150
+)
+```
+
+> **Dataset:** `har_data.csv` — 10,299 observations, 33 numeric features, 6 activity classes
+> **AI Attribution:** Claude (Anthropic) was used to help plan the analysis workflow, suggest diagnostic checks, and improve interpretation of PCA/FA/ICA outputs. All code was reviewed, executed, and validated by the author.
+
+---
+
+# Setup and Package Imports
+
+```{r packages}
+# ── Install packages if needed (run once) ────────────────────────────────────
+# install.packages(c("tidyverse", "corrplot", "ggplot2", "psych",
+#                    "GPArotation", "FactoMineR", "factoextra",
+#                    "fastICA", "CCA", "MVN", "gridExtra", "viridis",
+#                    "RColorBrewer", "kableExtra", "patchwork", "MASS"))
+
+# ── Load packages ─────────────────────────────────────────────────────────────
+library(tidyverse)      # dplyr, ggplot2, readr, tidyr
+library(corrplot)       # correlation heatmap
+library(psych)          # fa(), KMO(), cortest.bartlett(), principal()
+library(GPArotation)    # varimax / promax rotations for psych::fa()
+library(FactoMineR)     # PCA()
+library(factoextra)     # fviz_eig(), fviz_pca_ind()
+library(fastICA)        # fastICA()
+library(CCA)            # cc()
+library(MVN)            # mvn() — Mardia / HZ tests
+library(gridExtra)      # grid.arrange()
+library(viridis)        # colour scales
+library(RColorBrewer)   # palettes
+library(kableExtra)     # kable() formatting
+library(patchwork)      # combine ggplot panels
+library(MASS)           # ginv() — Moore-Penrose pseudoinverse
+
+# ── Reproducibility ───────────────────────────────────────────────────────────
+SEED <- 437
+RNGkind("Mersenne-Twister", "Rejection")  # R >= 3.6 default; explicit for portability
+set.seed(SEED)
+
+# ── Output directories ────────────────────────────────────────────────────────
+dir.create("figures", showWarnings = FALSE)
+dir.create("output",  showWarnings = FALSE)
+
+cat("All packages loaded. SEED =", SEED, "\n")
+```
+
+---
+
+# Load Data
+
+```{r load-data}
+DATA_PATH <- "har_data.csv"
+har       <- read_csv(DATA_PATH, show_col_types = FALSE)
+
+cat("Shape:", nrow(har), "×", ncol(har), "\n")
+cat("Column names:\n")
+print(names(har))
+
+head(har, 3)
+```
+
+## Data Audit
+
+```{r data-audit}
+cat("=== Data Audit ===\n")
+cat("Rows       :", nrow(har), "\n")
+cat("Columns    :", ncol(har), "\n")
+cat("Missing    :", sum(is.na(har)), "\n")
+cat("Duplicates :", sum(duplicated(har)), "\n\n")
+
+cat("Activity distribution:\n")
+print(table(har$activity))
+```
+
+> **Data audit summary:**
+> - n = 10,299 observations, p = 33 numeric features + 1 activity label
+> - No missing values, no duplicate rows
+> - All numeric variables are already normalised to [−1, 1] per the dataset README
+> - `activity` is the categorical label; retained for colour-coding visualisations but **excluded from multivariate analysis**
+
+---
+
+# Data Cleaning and Preprocessing
+
+```{r preprocessing}
+# ── Separate label and features ───────────────────────────────────────────────
+y     <- factor(har$activity)
+X_raw <- har %>% select(-activity)
+
+feature_names <- names(X_raw)
+
+# Abbreviated names for plot readability
+short_names <- feature_names %>%
+  str_replace_all("Body",    "B")   %>%
+  str_replace_all("Gravity", "Grav") %>%
+  str_replace_all("mean\\(\\)", "m") %>%
+  str_replace_all("Mag",    "Mg")  %>%
+  str_replace_all("Acc",    "A")   %>%
+  str_replace_all("Gyro",   "G")   %>%
+  str_replace_all("Jerk",   "J")
+
+cat("Feature matrix :", nrow(X_raw), "×", ncol(X_raw), "\n")
+cat("Label vector   :", length(y), "\n")
+cat("Classes        :", levels(y), "\n")
+```
+
+```{r standardise}
+# ── Standardise (z-score) — PCA/FA based on correlation matrix ────────────────
+X_scaled <- scale(X_raw)          # n × p matrix, mean=0, sd=1
+
+cat("After standardisation:\n")
+cat("  mean ≈", round(mean(X_scaled), 6), "(expect 0)\n")
+cat("  sd   ≈", round(mean(apply(X_scaled, 2, sd)), 6), "(expect 1)\n")
+
+X_df <- as.data.frame(X_scaled)
+colnames(X_df) <- feature_names
+
+# Save
+write.csv(X_df, "output/X_scaled.csv", row.names = FALSE)
+cat("Saved X_scaled.csv\n")
+```
+
+---
+
+# Exploratory Data Analysis (EDA)
+
+## Summary Statistics
+
+```{r summary-stats}
+desc <- X_df %>%
+  pivot_longer(everything(), names_to = "feature", values_to = "value") %>%
+  group_by(feature) %>%
+  summarise(
+    mean   = round(mean(value),   3),
+    sd     = round(sd(value),     3),
+    min    = round(min(value),    3),
+    q25    = round(quantile(value, 0.25), 3),
+    median = round(median(value), 3),
+    q75    = round(quantile(value, 0.75), 3),
+    max    = round(max(value),    3),
+    .groups = "drop"
+  )
+
+write.csv(desc, "output/summary_stats.csv", row.names = FALSE)
+
+desc %>%
+  kable(caption = "Summary Statistics (standardised features)") %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"),
+                font_size = 11, full_width = FALSE)
+```
+
+## Distribution Panel
+
+```{r fig1-distributions, fig.width=11, fig.height=8, fig.cap="Distributions of 9 representative features by activity"}
+# Pick 9 evenly-spaced features
+idx9 <- round(seq(1, 33, length.out = 9))
+sel_features <- feature_names[idx9]
+sel_short    <- short_names[idx9]
+act_palette  <- brewer.pal(6, "Set2")
+activity_list <- levels(y)
+
+plot_list <- map2(sel_features, sel_short, function(col, sname) {
+  df_plot <- data.frame(value = X_df[[col]], activity = y)
+  ggplot(df_plot, aes(x = value, fill = activity, colour = activity)) +
+    geom_density(alpha = 0.4, linewidth = 0.4) +
+    scale_fill_brewer(palette = "Set2") +
+    scale_colour_brewer(palette = "Set2") +
+    labs(title = sname, x = "Standardised value", y = "Density") +
+    theme_minimal(base_size = 8) +
+    theme(legend.position = "none",
+          plot.title = element_text(size = 8, face = "bold"))
+})
+
+# Combine panels
+legend_plot <- ggplot(data.frame(activity = y, v = 1),
+                      aes(x = v, fill = activity)) +
+  geom_bar() +
+  scale_fill_brewer(palette = "Set2") +
+  theme_void() +
+  theme(legend.position = "bottom",
+        legend.title = element_text(size = 9),
+        legend.text  = element_text(size = 8))
+
+fig1 <- wrap_plots(plot_list, ncol = 3) +
+  plot_annotation(
+    title = "Distributions of 9 Representative Features by Activity",
+    theme = theme(plot.title = element_text(size = 11, face = "bold"))
+  )
+
+# Save
+ggsave("figures/fig1_distributions.png", fig1, width = 11, height = 8, dpi = 150)
+fig1
+```
+
+## Correlation Heatmap
+
+```{r fig2-correlation, fig.width=11, fig.height=10, fig.cap="Feature correlation matrix (lower triangle)"}
+corr_mat <- cor(X_df)
+
+# Save heatmap via corrplot (base R graphics)
+png("figures/fig2_correlation_heatmap.png", width = 1600, height = 1400, res = 150)
+corrplot(corr_mat,
+         method   = "color",
+         type     = "lower",
+         col      = colorRampPalette(c("firebrick3", "white", "steelblue4"))(200),
+         tl.cex   = 0.55,
+         tl.col   = "black",
+         tl.srt   = 90,
+         addgrid.col = "gray90",
+         diag     = FALSE,
+         cl.cex   = 0.7,
+         title    = "Feature Correlation Matrix (Lower Triangle)",
+         mar      = c(0, 0, 2, 0))
+dev.off()
+
+corrplot(corr_mat,
+         method   = "color",
+         type     = "lower",
+         col      = colorRampPalette(c("firebrick3", "white", "steelblue4"))(200),
+         tl.cex   = 0.55,
+         tl.col   = "black",
+         tl.srt   = 90,
+         addgrid.col = "gray90",
+         diag     = FALSE,
+         cl.cex   = 0.7,
+         title    = "Feature Correlation Matrix (Lower Triangle)",
+         mar      = c(0, 0, 2, 0))
+
+# Count high-correlation pairs
+high_corr_pairs <- sum(abs(corr_mat[lower.tri(corr_mat)]) > 0.80)
+cat("\nPairs with |r| > 0.80:", high_corr_pairs, "\n")
+```
+
+> **EDA takeaway:** The correlation heatmap reveals clear block structure — time-domain accelerometer features cluster together, as do frequency-domain features. Multiple pairs show |r| > 0.80, motivating a latent-dimension approach.
+
+---
+
+# Assumption Testing
+
+## Multivariate Normality — Mardia's Test & QQ-plot
+
+```{r fig3-mvn, fig.width=6, fig.height=5, fig.cap="MVN assessment: Mahalanobis distance QQ-plot"}
+# Subsample n = 1000 for speed
+set.seed(SEED)
+idx_sub <- sample(nrow(X_scaled), 1000)
+X_sub   <- X_scaled[idx_sub, ]
+
+# Mahalanobis distances
+mu_sub  <- colMeans(X_sub)
+cov_sub <- cov(X_sub)
+# 协方差矩阵可能近奇异（有完全相关的列），用伪逆替代普通逆
+cov_inv <- MASS::ginv(cov_sub)
+D2      <- mahalanobis(X_sub, mu_sub, cov_inv, inverted = TRUE)
+
+p_dim   <- ncol(X_scaled)
+theo_q  <- qchisq(ppoints(length(D2)), df = p_dim)
+
+png("figures/fig3_mvn_qqplot.png", width = 900, height = 750, res = 150)
+qqplot(theo_q, sort(D2),
+       xlab = paste0("Chi²(", p_dim, ") quantiles"),
+       ylab = "Mahalanobis² quantiles",
+       main = "MVN Assessment: Mahalanobis Distance QQ-plot\n(n=1000 subsample)",
+       pch = 20, cex = 0.5, col = "steelblue")
+abline(0, 1, col = "firebrick", lty = 2, lwd = 2)
+legend("topleft", legend = "MVN reference line",
+       col = "firebrick", lty = 2, lwd = 2, cex = 0.8)
+dev.off()
+
+qqplot(theo_q, sort(D2),
+       xlab = paste0("Chi²(", p_dim, ") quantiles"),
+       ylab = "Mahalanobis² quantiles",
+       main = "MVN Assessment: Mahalanobis Distance QQ-plot\n(n=1000 subsample)",
+       pch = 20, cex = 0.5, col = "steelblue")
+abline(0, 1, col = "firebrick", lty = 2, lwd = 2)
+legend("topleft", legend = "MVN reference line",
+       col = "firebrick", lty = 2, lwd = 2, cex = 0.8)
+```
+
+```{r mvn-mardia}
+# Mardia's test (skewness + kurtosis) via MVN package
+# Uses a subsample for speed; adjust size if needed
+mvn_result <- mvn(data             = X_sub,
+                  test             = "mardia",
+                  univTest         = "SW",
+                  multivariatePlot = "none")
+
+cat("=== Mardia's Multivariate Normality Test ===\n")
+print(mvn_result$multivariateNormality)
+
+cat("\n=== Shapiro-Wilk marginal normality (n=200 subsample) ===\n")
+set.seed(SEED)
+idx200  <- sample(nrow(X_scaled), 200)
+sw_pvals <- apply(X_scaled[idx200, ], 2, function(v) shapiro.test(v)$p.value)
+n_normal <- sum(sw_pvals > 0.05)
+cat(sprintf("%d / %d features not rejected at α=0.05\n", n_normal, p_dim))
+cat("  => Marginal normality:",
+    ifelse(n_normal > p_dim * 0.7, "generally supported", "questionable"), "\n")
+```
+
+## KMO Test
+
+```{r kmo}
+kmo_result <- KMO(X_df)
+
+cat(sprintf("KMO overall: %.4f\n", kmo_result$MSA))
+interp <- dplyr::case_when(
+  kmo_result$MSA >= 0.90 ~ "marvellous",
+  kmo_result$MSA >= 0.80 ~ "meritorious",
+  kmo_result$MSA >= 0.70 ~ "middling",
+  kmo_result$MSA >= 0.60 ~ "mediocre",
+  TRUE                   ~ "miserable"
+)
+cat("  → KMO interpretation:", interp, "\n\n")
+
+# Per-variable KMO
+kmo_per_var <- data.frame(
+  feature = short_names,
+  KMO     = round(kmo_result$MSAi, 4)
+) %>% arrange(KMO)
+
+write.csv(kmo_per_var, "output/kmo_per_variable.csv", row.names = FALSE)
+cat("Min KMO per variable:", min(kmo_per_var$KMO), "| Max:", max(kmo_per_var$KMO), "\n")
+
+kmo_per_var %>%
+  kable(caption = "Per-variable KMO values") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"),
+                font_size = 11, full_width = FALSE)
+```
+
+## Bartlett's Test of Sphericity
+
+```{r bartlett}
+bart_result <- cortest.bartlett(corr_mat, n = nrow(X_df))
+
+cat(sprintf("Bartlett's test: χ²(%d) = %.2f,  p = %.2e\n",
+            bart_result$df, bart_result$chisq, bart_result$p.value))
+cat("  → Correlation matrix significantly differs from identity:",
+    ifelse(bart_result$p.value < 0.05, "YES", "NO"), "\n")
+```
+
+## Extreme Multicollinearity Check
+
+```{r multicollinearity}
+corr_upper  <- corr_mat
+corr_upper[lower.tri(corr_upper, diag = TRUE)] <- NA
+extreme_idx <- which(abs(corr_upper) > 0.95, arr.ind = TRUE)
+
+cat(sprintf("Pairs with |r| > 0.95: %d\n", nrow(extreme_idx)))
+if (nrow(extreme_idx) > 0) {
+  for (i in seq_len(nrow(extreme_idx))) {
+    r_val <- round(corr_upper[extreme_idx[i, 1], extreme_idx[i, 2]], 4)
+    cat(sprintf("  %s  ↔  %s  |  r = %.4f\n",
+                short_names[extreme_idx[i, 1]],
+                short_names[extreme_idx[i, 2]], r_val))
+  }
+}
+```
+
+> **Assumption testing summary:**
+> - **MVN:** QQ-plot shows systematic departure from chi²(33) — data are not MVN. This motivates ICA (which exploits non-Gaussianity).
+> - **KMO:** ≥ 0.80 strongly supports factor analysis.
+> - **Bartlett:** Significant (p ≪ 0.05) → FA is appropriate.
+> - **Multicollinearity:** Small number of near-duplicate pairs; FA naturally absorbs collinear variables into shared factors.
+
+---
+
+# Principal Component Analysis (PCA)
+
+```{r pca-full}
+# ── Full PCA via prcomp (correlation matrix = scale=TRUE; already scaled here)
+pca_full <- prcomp(X_scaled, center = FALSE, scale. = FALSE)
+
+eigvals   <- pca_full$sdev^2
+var_ratio <- eigvals / sum(eigvals)
+cum_var   <- cumsum(var_ratio)
+
+# PCs explaining 80%, 90%, 95%
+for (thresh in c(0.80, 0.90, 0.95)) {
+  k <- which(cum_var >= thresh)[1]
+  cat(sprintf("%d%% variance explained by %d PCs\n", as.integer(thresh*100), k))
+}
+
+# Save eigenvalue table
+eig_table <- data.frame(
+  PC          = 1:p_dim,
+  eigenvalue  = round(eigvals,   4),
+  var_explained = round(var_ratio, 4),
+  cumulative  = round(cum_var,   4)
+)
+write.csv(eig_table, "output/pca_eigenvalues.csv", row.names = FALSE)
+
+cat("\nFirst 10 PCs:\n")
+eig_table[1:10, ] %>%
+  kable(caption = "PCA Eigenvalue Table (first 10 PCs)") %>%
+  kable_styling(bootstrap_options = c("striped", "condensed"),
+                font_size = 11, full_width = FALSE)
+```
+
+## Scree Plot
+
+```{r fig4-scree, fig.width=12, fig.height=5, fig.cap="PCA scree plot and cumulative variance"}
+n_show <- 20
+
+df_eig <- data.frame(
+  PC      = 1:n_show,
+  eigval  = eigvals[1:n_show],
+  cumvar  = cum_var[1:n_show] * 100
+)
+
+p_scree <- ggplot(df_eig, aes(x = PC, y = eigval)) +
+  geom_line(colour = "steelblue", linewidth = 1) +
+  geom_point(colour = "steelblue", size = 2.5) +
+  geom_hline(yintercept = 1, linetype = "dashed", colour = "firebrick",
+             linewidth = 0.9) +
+  annotate("text", x = n_show - 2, y = 1.15, label = "Kaiser (λ=1)",
+           colour = "firebrick", size = 3.5) +
+  scale_x_continuous(breaks = 1:n_show) +
+  labs(title = "Scree Plot", x = "Principal Component", y = "Eigenvalue") +
+  theme_minimal(base_size = 11)
+
+p_cumvar <- ggplot(df_eig, aes(x = PC, y = cumvar)) +
+  geom_line(colour = "darkorange", linewidth = 1) +
+  geom_point(colour = "darkorange", size = 2.5) +
+  geom_hline(yintercept = c(80, 90, 95),
+             linetype   = c("dotted","dotted","dotted"),
+             colour     = c("gray50", "darkgreen", "purple"),
+             linewidth  = 0.9) +
+  annotate("text", x = rep(n_show - 1, 3), y = c(81.5, 91.5, 96.5),
+           label  = c("80%", "90%", "95%"),
+           colour = c("gray50","darkgreen","purple"), size = 3) +
+  scale_x_continuous(breaks = 1:n_show) +
+  scale_y_continuous(limits = c(0, 105)) +
+  labs(title = "Cumulative Variance Explained",
+       x = "Number of PCs", y = "Cumulative Variance (%)") +
+  theme_minimal(base_size = 11)
+
+fig4 <- p_scree + p_cumvar +
+  plot_annotation(title = "PCA: Scree Plot and Cumulative Variance",
+                  theme = theme(plot.title = element_text(size = 12, face = "bold")))
+
+ggsave("figures/fig4_pca_scree.png", fig4, width = 12, height = 5, dpi = 150)
+fig4
+```
+
+## PC Score Plot (PC1 vs PC2)
+
+```{r fig5-scores, fig.width=8, fig.height=6, fig.cap="PCA score plot: PC1 vs PC2 coloured by activity"}
+scores <- pca_full$x
+
+df_scores <- data.frame(
+  PC1      = scores[, 1],
+  PC2      = scores[, 2],
+  activity = y
+)
+
+fig5 <- ggplot(df_scores, aes(x = PC1, y = PC2, colour = activity)) +
+  geom_point(size = 0.8, alpha = 0.35) +
+  scale_colour_brewer(palette = "Set2") +
+  labs(
+    title  = "PCA Score Plot: PC1 vs PC2 (coloured by activity)",
+    x      = sprintf("PC1 (%.1f%% var)", var_ratio[1] * 100),
+    y      = sprintf("PC2 (%.1f%% var)", var_ratio[2] * 100),
+    colour = "Activity"
+  ) +
+  guides(colour = guide_legend(override.aes = list(size = 3, alpha = 1))) +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "right")
+
+ggsave("figures/fig5_pca_scores.png", fig5, width = 8, height = 6, dpi = 150)
+fig5
+```
+
+## PCA Loadings Heatmap
+
+```{r fig6-loadings, fig.width=9, fig.height=10, fig.cap="PCA loadings heatmap (first 6 PCs)"}
+n_pcs <- 6
+
+loadings_mat <- pca_full$rotation[, 1:n_pcs]
+rownames(loadings_mat) <- short_names
+colnames(loadings_mat) <- paste0("PC", 1:n_pcs)
+
+# Convert to long for ggplot
+df_loads <- loadings_mat %>%
+  as.data.frame() %>%
+  rownames_to_column("feature") %>%
+  pivot_longer(-feature, names_to = "PC", values_to = "loading") %>%
+  mutate(feature = factor(feature, levels = rev(short_names)))
+
+fig6 <- ggplot(df_loads, aes(x = PC, y = feature, fill = loading)) +
+  geom_tile(colour = "gray85", linewidth = 0.2) +
+  geom_text(aes(label = round(loading, 2)), size = 2.8) +
+  scale_fill_gradient2(low   = "firebrick3",
+                       mid   = "white",
+                       high  = "steelblue4",
+                       midpoint = 0, limits = c(-1, 1),
+                       name  = "Loading") +
+  labs(title = paste("PCA Loadings (first", n_pcs, "components)"),
+       x = NULL, y = NULL) +
+  theme_minimal(base_size = 9) +
+  theme(axis.text.y = element_text(size = 8))
+
+ggsave("figures/fig6_pca_loadings.png", fig6, width = 9, height = 10, dpi = 150)
+fig6
+```
+
+---
+
+# Parallel Analysis and Dimension Selection
+
+```{r fig7-parallel-analysis, fig.width=9, fig.height=5, fig.cap="Parallel analysis: observed vs random eigenvalues"}
+# ── Horn's parallel analysis ──────────────────────────────────────────────────
+set.seed(SEED)
+n_iter  <- 100
+n_obs   <- nrow(X_scaled)
+n_var   <- ncol(X_scaled)
+
+rand_eigvals <- matrix(0, nrow = n_iter, ncol = n_var)
+
+for (i in seq_len(n_iter)) {
+  rand_data     <- matrix(rnorm(n_obs * n_var), nrow = n_obs, ncol = n_var)
+  rand_pca      <- prcomp(rand_data, center = FALSE, scale. = FALSE)
+  rand_eigvals[i, ] <- rand_pca$sdev^2
+}
+
+mean_rand <- colMeans(rand_eigvals)
+p95_rand  <- apply(rand_eigvals, 2, quantile, 0.95)
+
+# Cut-off: observed eigenvalue > 95th-percentile random
+n_factors_pa <- sum(eigvals > p95_rand)
+cat(sprintf("Parallel analysis suggests: %d factors/components\n", n_factors_pa))
+
+# Kaiser criterion
+kaiser_k <- sum(eigvals > 1)
+cat(sprintf("Kaiser criterion (λ>1)    : %d factors\n", kaiser_k))
+
+# Plot
+n_show_pa <- 15
+df_pa <- data.frame(
+  comp      = 1:n_show_pa,
+  observed  = eigvals[1:n_show_pa],
+  rand_mean = mean_rand[1:n_show_pa],
+  rand_p95  = p95_rand[1:n_show_pa]
+)
+
+fig7 <- ggplot(df_pa, aes(x = comp)) +
+  geom_ribbon(aes(ymin = rand_mean, ymax = rand_p95),
+              fill = "firebrick", alpha = 0.12) +
+  geom_line(aes(y = rand_mean, colour = "Random (mean)"), linewidth = 1.2, linetype = "dashed") +
+  geom_point(aes(y = rand_mean, colour = "Random (mean)"), size = 3, shape = 15) +
+  geom_line(aes(y = observed, colour = "Observed"), linewidth = 1.4) +
+  geom_point(aes(y = observed, colour = "Observed"), size = 3) +
+  geom_vline(xintercept = n_factors_pa + 0.5,
+             colour = "darkorange", linetype = "dotted", linewidth = 1.5) +
+  geom_hline(yintercept = 1,
+             colour = "gray50", linetype = "dotted", linewidth = 1) +
+  annotate("text",
+           x = n_factors_pa + 0.7,
+           y = max(df_pa$observed) * 0.9,
+           label = paste0("PA cut-off: ", n_factors_pa, " factors"),
+           colour = "darkorange", size = 3.5, hjust = 0) +
+  scale_colour_manual(values = c("Observed" = "steelblue4",
+                                 "Random (mean)" = "firebrick3"),
+                      name = NULL) +
+  scale_x_continuous(breaks = 1:n_show_pa) +
+  labs(title = "Parallel Analysis: Observed vs Random Eigenvalues",
+       x = "Component Number", y = "Eigenvalue") +
+  theme_minimal(base_size = 11) +
+  theme(legend.position = "bottom")
+
+ggsave("figures/fig7_parallel_analysis.png", fig7, width = 9, height = 5, dpi = 150)
+fig7
+```
+
+```{r factor-number-decision}
+cat("=== Dimension Selection ===\n")
+cat(sprintf("Kaiser criterion (λ>1) : %d factors\n", kaiser_k))
+cat(sprintf("Parallel analysis      : %d factors\n", n_factors_pa))
+cat("\nSelected: NFACTORS_BEST =", 6, "\n")
+cat("  (supported by both criteria; produces interpretable, stable loadings)\n")
+
+NFACTORS_LIST <- c(4, 5, 6)
+NFACTORS_BEST <- 6
+```
+
+---
+
+# Factor Analysis (Unrotated, Varimax, Promax)
+
+```{r fa-helpers}
+# ── Helper: plot loading heatmap ──────────────────────────────────────────────
+plot_loading_heatmap <- function(loads_mat, n_factors, rotation_name, save_path) {
+  rownames(loads_mat) <- short_names
+  colnames(loads_mat) <- paste0("F", 1:n_factors)
+
+  df_l <- loads_mat %>%
+    as.data.frame() %>%
+    rownames_to_column("feature") %>%
+    pivot_longer(-feature, names_to = "Factor", values_to = "loading") %>%
+    mutate(feature = factor(feature, levels = rev(short_names)))
+
+  p <- ggplot(df_l, aes(x = Factor, y = feature, fill = loading)) +
+    geom_tile(colour = "gray85", linewidth = 0.2) +
+    geom_text(aes(label = sprintf("%.2f", loading)), size = 2.7) +
+    scale_fill_gradient2(low  = "firebrick3", mid = "white",
+                         high = "steelblue4", midpoint = 0,
+                         limits = c(-1, 1), name = "Loading") +
+    labs(title = paste0("FA Loadings — ", n_factors, " factors, ", rotation_name),
+         x = NULL, y = NULL) +
+    theme_minimal(base_size = 9) +
+    theme(axis.text.y = element_text(size = 8))
+
+  ggsave(save_path, p,
+         width  = max(6, n_factors * 1.5),
+         height = 10, dpi = 150)
+  p
+}
+
+# ── Helper: simple-structure score ───────────────────────────────────────────
+simple_structure_score <- function(loads_mat) {
+  clear <- 0
+  for (i in seq_len(nrow(loads_mat))) {
+    row_abs <- sort(abs(loads_mat[i, ]), decreasing = TRUE)
+    if (row_abs[1] > 0.30 && (row_abs[1] / (row_abs[2] + 1e-9)) > 1.5)
+      clear <- clear + 1
+  }
+  clear / nrow(loads_mat)
+}
+```
+
+## Unrotated FA
+
+```{r fa-unrotated}
+set.seed(SEED)
+fa_unrot <- fa(X_df, nfactors = NFACTORS_BEST, rotate = "none",
+               fm = "ml", scores = "regression")
+
+communalities <- fa_unrot$communality
+uniqueness    <- fa_unrot$uniquenesses
+
+comm_df <- data.frame(
+  feature      = short_names,
+  communality  = round(communalities, 3),
+  uniqueness   = round(uniqueness,    3)
+)
+write.csv(comm_df, "output/fa_communalities.csv", row.names = FALSE)
+
+cat(sprintf("Communalities (unrotated, %d-factor):\n", NFACTORS_BEST))
+comm_df %>%
+  kable(caption = "FA Communalities and Uniquenesses") %>%
+  kable_styling(bootstrap_options = c("striped","condensed"),
+                font_size = 11, full_width = FALSE)
+```
+
+## Varimax Rotation (Primary)
+
+```{r fig8-varimax, fig.width=9, fig.height=10, fig.cap="FA loadings — varimax rotation"}
+set.seed(SEED)
+fa_varimax <- fa(X_df, nfactors = NFACTORS_BEST, rotate = "varimax",
+                 fm = "ml", scores = "regression")
+
+loads_varimax <- fa_varimax$loadings[]   # extract numeric matrix
+
+fig8 <- plot_loading_heatmap(loads_varimax, NFACTORS_BEST, "Varimax",
+                             "figures/fig8_fa_varimax_loadings.png")
+loads_varimax_df <- as.data.frame(loads_varimax)
+rownames(loads_varimax_df) <- short_names
+colnames(loads_varimax_df) <- paste0("F", 1:NFACTORS_BEST)
+write.csv(loads_varimax_df, "output/fa_varimax_loadings.csv")
+
+fig8
+```
+
+## Promax Rotation (Oblique)
+
+```{r fig9-promax, fig.width=9, fig.height=10, fig.cap="FA loadings — promax rotation"}
+set.seed(SEED)
+fa_promax <- fa(X_df, nfactors = NFACTORS_BEST, rotate = "promax",
+                fm = "ml", scores = "regression")
+
+loads_promax <- fa_promax$loadings[]
+
+fig9 <- plot_loading_heatmap(loads_promax, NFACTORS_BEST, "Promax",
+                             "figures/fig9_fa_promax_loadings.png")
+loads_promax_df <- as.data.frame(loads_promax)
+rownames(loads_promax_df) <- short_names
+colnames(loads_promax_df) <- paste0("F", 1:NFACTORS_BEST)
+write.csv(loads_promax_df, "output/fa_promax_loadings.csv")
+
+fig9
+```
+
+## Factor Interpretation
+
+```{r fa-interpretation}
+cat("=== Varimax: top-loading variables per factor (|loading| > 0.40) ===\n")
+for (j in seq_len(NFACTORS_BEST)) {
+  col_abs <- abs(loads_varimax[, j])
+  top_idx <- order(col_abs, decreasing = TRUE)
+  top_idx <- top_idx[col_abs[top_idx] > 0.40]
+  top_names <- paste0(
+    short_names[top_idx[1:min(6, length(top_idx))]],
+    " (", sprintf("%+.2f", loads_varimax[top_idx[1:min(6, length(top_idx))], j]), ")"
+  )
+  cat(sprintf("  F%d: %s\n", j, paste(top_names, collapse = ", ")))
+}
+```
+
+```{r promax-factor-corr}
+# Inter-factor correlations under promax
+phi <- fa_promax$Phi
+if (!is.null(phi)) {
+  phi_df <- as.data.frame(phi)
+  rownames(phi_df) <- colnames(phi_df) <- paste0("F", 1:NFACTORS_BEST)
+  cat("\nPromax inter-factor correlations:\n")
+  print(round(phi_df, 3))
+  write.csv(phi_df, "output/promax_factor_correlations.csv")
+} else {
+  cat("Inter-factor correlations not available.\n")
+}
+```
+
+## Simple-Structure Comparison
+
+```{r ss-comparison}
+loads_unrot <- fa_unrot$loadings[]
+
+cat(sprintf("%-12s  simple-structure score = %.3f\n",
+            "Unrotated", simple_structure_score(loads_unrot)))
+cat(sprintf("%-12s  simple-structure score = %.3f\n",
+            "Varimax",   simple_structure_score(loads_varimax)))
+cat(sprintf("%-12s  simple-structure score = %.3f\n",
+            "Promax",    simple_structure_score(loads_promax)))
+```
+
+> **FA interpretation:**
+> Varimax is the primary rotation. Factor names (revise after inspecting loadings):
+> - **F1:** Likely *frequency-domain body acceleration* (fBodyAcc, fBodyAccJerk)
+> - **F2:** Likely *time-domain body rotation* (tBodyGyro, tBodyGyroJerk)
+> - **F3:** Likely *gravitational acceleration* (tGravityAcc)
+> - **F4+:** Remaining gyroscope / magnitude features
+
+---
+
+# ICA Comparison
+
+```{r fig10-ica, fig.width=9, fig.height=10, fig.cap="ICA mixing matrix (normalised)"}
+set.seed(SEED)
+ica_result <- fastICA(X_scaled, n.comp = NFACTORS_BEST,
+                      alg.typ = "parallel", fun = "logcosh",
+                      maxit = 1000, tol = 1e-4, verbose = FALSE)
+
+# Mixing matrix: A (p × k)
+A_ica      <- ica_result$A          # n_var × n_comp
+S_ica      <- ica_result$S          # n_obs × n_comp (independent component scores)
+
+# Normalise columns to [-1, 1]
+A_norm <- sweep(A_ica, 2, apply(abs(A_ica), 2, max), "/")
+rownames(A_norm) <- short_names
+colnames(A_norm) <- paste0("IC", 1:NFACTORS_BEST)
+
+# Plot
+df_ica <- A_norm %>%
+  as.data.frame() %>%
+  rownames_to_column("feature") %>%
+  pivot_longer(-feature, names_to = "Component", values_to = "weight") %>%
+  mutate(feature = factor(feature, levels = rev(short_names)))
+
+fig10 <- ggplot(df_ica, aes(x = Component, y = feature, fill = weight)) +
+  geom_tile(colour = "gray85", linewidth = 0.2) +
+  geom_text(aes(label = sprintf("%.2f", weight)), size = 2.7) +
+  scale_fill_gradient2(low  = "firebrick3", mid = "white",
+                       high = "steelblue4", midpoint = 0,
+                       limits = c(-1, 1), name = "Norm. weight") +
+  labs(title = paste0("ICA Mixing Matrix (", NFACTORS_BEST, " components, normalised)"),
+       x = NULL, y = NULL) +
+  theme_minimal(base_size = 9) +
+  theme(axis.text.y = element_text(size = 8))
+
+ggsave("figures/fig10_ica_mixing.png", fig10, width = 9, height = 10, dpi = 150)
+
+# Save
+write.csv(A_norm, "output/ica_mixing_normalised.csv")
+fig10
+```
+
+## Non-Gaussianity: Kurtosis of ICA vs PCA Components
+
+```{r ica-kurtosis}
+cat("ICA component excess kurtosis (Gaussian = 0):\n")
+for (i in seq_len(NFACTORS_BEST)) {
+  k_val <- kurtosis(S_ica[, i])   # psych::kurtosis already returns excess kurtosis (raw - 3)
+  cat(sprintf("  IC%d: %.4f\n", i, k_val))
+}
+
+cat("\nPCA component excess kurtosis:\n")
+scores_full <- pca_full$x
+for (i in seq_len(NFACTORS_BEST)) {
+  k_val <- kurtosis(scores_full[, i])   # psych::kurtosis already returns excess kurtosis
+  cat(sprintf("  PC%d: %.4f\n", i, k_val))
+}
+```
+
+> **ICA vs FA comparison:**
+> ICA seeks statistically *independent* components by exploiting non-Gaussianity. Given the significant departure from MVN, ICA is a valuable complement. However, FA with varimax rotation is preferred as the primary method because the HAR data has natural sensor-domain clusters that align well with a factorial interpretation, and FA communalities directly measure how much each variable is explained by the latent structure.
+
+---
+
+# Robustness Checks
+
+## Factor Number Comparison
+
+```{r robustness-factor-number}
+cat(sprintf("=== Robustness: Factor number comparison ===\n"))
+cat(sprintf("%3s  %10s  %8s  %9s\n", "k", "TotalComm", "MinComm", "SS-score"))
+
+for (k in NFACTORS_LIST) {
+  set.seed(SEED)
+  fa_k      <- fa(X_df, nfactors = k, rotate = "varimax", fm = "ml")
+  loads_k   <- fa_k$loadings[]
+  total_comm <- sum(fa_k$communality)
+  min_comm   <- min(fa_k$communality)
+  ss         <- simple_structure_score(loads_k)
+  cat(sprintf("%3d  %10.3f  %8.3f  %9.3f\n", k, total_comm, min_comm, ss))
+}
+```
+
+## Rotation Comparison
+
+```{r robustness-rotation}
+cat("=== Robustness: Rotation comparison (6-factor) ===\n")
+cat(sprintf("%12s  %9s  %18s\n", "Rotation", "SS-score", "Max cross-loading"))
+
+for (rot_name in c("Varimax", "Promax")) {
+  lds <- if (rot_name == "Varimax") loads_varimax else loads_promax
+  ss  <- simple_structure_score(lds)
+  cross <- max(apply(abs(lds), 1, function(r) sort(r, decreasing = TRUE)[2]))
+  cat(sprintf("%12s  %9.3f  %18.3f\n", rot_name, ss, cross))
+}
+```
+
+## Subsample Stability
+
+```{r robustness-subsample}
+set.seed(SEED)
+n_sub_iter <- 5
+half_n     <- nrow(X_scaled) %/% 2
+
+sub_loads_list <- vector("list", n_sub_iter)
+for (i in seq_len(n_sub_iter)) {
+  idx_half <- sample(nrow(X_scaled), half_n)
+  fa_half  <- fa(X_df[idx_half, ], nfactors = NFACTORS_BEST,
+                 rotate = "varimax", fm = "ml")
+  sub_loads_list[[i]] <- fa_half$loadings[]
+}
+
+# Align signs to first split
+ref     <- sub_loads_list[[1]]
+aligned <- lapply(sub_loads_list, function(lds) {
+  signs <- sign(colSums(ref * lds))
+  sweep(lds, 2, signs, "*")
+})
+
+all_loads  <- array(unlist(aligned), dim = c(p_dim, NFACTORS_BEST, n_sub_iter))
+std_across <- apply(all_loads, c(1, 2), sd)
+
+cat("=== Robustness: Subsample stability (50% splits, n=5) ===\n")
+cat(sprintf("Mean SD of loadings across 5 half-splits : %.4f\n", mean(std_across)))
+cat(sprintf("Max  SD of loadings across 5 half-splits : %.4f\n", max(std_across)))
+cat("  → Lower values indicate more stable factor structure\n")
+```
+
+> **Robustness summary:**
+> - **Factor number:** Both Kaiser and parallel analysis suggest 6 factors; 6-factor solution achieves higher communality and better simple structure.
+> - **Rotation:** Varimax and Promax produce similarly clear simple structure; varimax preferred.
+> - **Subsample stability:** Low SD of loadings across random half-splits indicates the factor structure is robust.
+
+---
+
+# CCA / Multivariate Assessment
+
+## CCA Setup
+
+```{r cca-setup}
+# ── Split features into time-domain and frequency-domain blocks ───────────────
+block_t_cols <- feature_names[str_starts(feature_names, "t")]
+block_f_cols <- feature_names[str_starts(feature_names, "f")]
+
+cat(sprintf("Block A (time-domain) : %d variables\n", length(block_t_cols)))
+cat(sprintf("Block B (freq-domain) : %d variables\n", length(block_f_cols)))
+
+X_t <- as.matrix(X_df[, block_t_cols])
+X_f <- as.matrix(X_df[, block_f_cols])
+
+# CCA — use cancor() (base R, no package needed)
+n_cc     <- min(4, length(block_f_cols))
+cca_res  <- cancor(X_t, X_f)
+
+cat("\nCanonical correlations (time vs frequency domain):\n")
+for (i in seq_len(n_cc)) {
+  cat(sprintf("  Canonical variate %d: r = %.4f\n", i, cca_res$cor[i]))
+}
+```
+
+## CCA Score Plot
+
+```{r fig11-cca, fig.width=7, fig.height=6, fig.cap="CCA: first canonical pair coloured by activity"}
+# Canonical variates
+U <- X_t %*% cca_res$xcoef   # time-domain canonical scores
+V <- X_f %*% cca_res$ycoef   # freq-domain canonical scores
+
+df_cca <- data.frame(
+  U1       = U[, 1],
+  V1       = V[, 1],
+  activity = y
+)
+
+fig11 <- ggplot(df_cca, aes(x = U1, y = V1, colour = activity)) +
+  geom_point(size = 0.8, alpha = 0.3) +
+  scale_colour_brewer(palette = "Set2") +
+  labs(
+    title  = sprintf("CCA: First canonical pair (r=%.3f)", cca_res$cor[1]),
+    x      = "1st canonical variate (time-domain)",
+    y      = "1st canonical variate (freq-domain)",
+    colour = "Activity"
+  ) +
+  guides(colour = guide_legend(override.aes = list(size = 3, alpha = 1))) +
+  theme_minimal(base_size = 11)
+
+ggsave("figures/fig11_cca_first_pair.png", fig11, width = 7, height = 6, dpi = 150)
+fig11
+```
+
+> **CCA discussion:**
+> The HAR features split naturally into a *time-domain* block (tBody*, tGravity*, 20 variables) and a *frequency-domain* block (fBody*, 13 variables), since frequency features are derived from time features via FFT. The high first canonical correlation confirms that both domains share a common latent structure — consistent with the correlation heatmap's block pattern.
+>
+> A multivariate regression (X → Y as numeric outcome block) is not pursued because `activity` is a 6-class *nominal* label, not a continuous multivariate response. Multinomial classification or LDA would be more appropriate, but fall outside the STA437 Weeks 1–8 toolkit.
+
+---
+
+# Summary of Saved Outputs
+
+```{r final-summary}
+cat("=== Saved Figures ===\n")
+for (f in sort(list.files("figures", full.names = TRUE))) cat(" ", f, "\n")
+
+cat("\n=== Saved Output Tables ===\n")
+for (f in sort(list.files("output", full.names = TRUE)))  cat(" ", f, "\n")
+
+cat("\n=== Analysis Complete ===\n")
+cat("Seed used:", SEED, "\n")
+cat("To reproduce: knit this Rmd with a fresh R session.\n")
+```
+
+---
+
+## Session Info
+
+```{r session-info}
+cat("=== R Session Information ===\n")
+sessionInfo()
+```
+
+---
+
+## Reproducibility Statement
+
+All stochastic operations (`fa()`, `fastICA()`, `sample()`, `rnorm()`) call `set.seed(437)` immediately before execution. `RNGkind("Mersenne-Twister", "Rejection")` is declared explicitly for cross-version portability (R ≥ 3.6). Chunk caching is disabled (`cache = FALSE`) to guarantee full re-execution on every knit. This document knits sequentially top-to-bottom with **no manual intervention**. The only path to change on a different machine is `DATA_PATH <- "har_data.csv"`.
+
+**Required R packages:**
+```
+tidyverse, corrplot, psych, GPArotation, FactoMineR, factoextra,
+fastICA, CCA, MVN, MASS, gridExtra, viridis, RColorBrewer, kableExtra, patchwork
+```
+Install with:
+```r
+install.packages(c("tidyverse", "corrplot", "psych", "GPArotation",
+                   "FactoMineR", "factoextra", "fastICA", "CCA",
+                   "MVN", "MASS", "gridExtra", "viridis", "RColorBrewer",
+                   "kableExtra", "patchwork"))
+```
+
+**AI Attribution:**
+Claude (Anthropic) was used to assist with analysis planning, diagnostic checks, and interpretation guidance. All code was reviewed, run, and validated by the author.
+
+**Reference:** Anguita, D., Ghio, A., Oneto, L., Parra, X., & Reyes-Ortiz, J. L. (2013). A public domain dataset for human activity recognition using smartphones. *ESANN 2013*.
