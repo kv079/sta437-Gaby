@@ -114,7 +114,7 @@ print(table(har$activity))
 ```{r preprocessing}
 # ── Separate label and features ───────────────────────────────────────────────
 y     <- factor(har$activity)
-X_raw <- har %>% select(-activity)
+X_raw <- har %>% dplyr::select(-activity)
 
 feature_names <- names(X_raw)
 
