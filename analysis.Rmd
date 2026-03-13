@@ -61,6 +61,7 @@ library(patchwork)      # combine ggplot panels
 
 # ── Reproducibility ───────────────────────────────────────────────────────────
 SEED <- 437
+RNGkind("Mersenne-Twister", "Rejection")  # R >= 3.6 default; explicit for portability
 set.seed(SEED)
 
 # ── Output directories ────────────────────────────────────────────────────────
@@ -656,6 +657,7 @@ simple_structure_score <- function(loads_mat) {
 ## Unrotated FA
 
 ```{r fa-unrotated}
+set.seed(SEED)
 fa_unrot <- fa(X_df, nfactors = NFACTORS_BEST, rotate = "none",
                fm = "ml", scores = "regression")
 
@@ -679,6 +681,7 @@ comm_df %>%
 ## Varimax Rotation (Primary)
 
 ```{r fig8-varimax, fig.width=9, fig.height=10, fig.cap="FA loadings — varimax rotation"}
+set.seed(SEED)
 fa_varimax <- fa(X_df, nfactors = NFACTORS_BEST, rotate = "varimax",
                  fm = "ml", scores = "regression")
 
@@ -697,6 +700,7 @@ fig8
 ## Promax Rotation (Oblique)
 
 ```{r fig9-promax, fig.width=9, fig.height=10, fig.cap="FA loadings — promax rotation"}
+set.seed(SEED)
 fa_promax <- fa(X_df, nfactors = NFACTORS_BEST, rotate = "promax",
                 fm = "ml", scores = "regression")
 
@@ -837,6 +841,7 @@ cat(sprintf("=== Robustness: Factor number comparison ===\n"))
 cat(sprintf("%3s  %10s  %8s  %9s\n", "k", "TotalComm", "MinComm", "SS-score"))
 
 for (k in NFACTORS_LIST) {
+  set.seed(SEED)
   fa_k      <- fa(X_df, nfactors = k, rotate = "varimax", fm = "ml")
   loads_k   <- fa_k$loadings[]
   total_comm <- sum(fa_k$communality)
@@ -971,6 +976,15 @@ for (f in sort(list.files("output", full.names = TRUE)))  cat(" ", f, "\n")
 cat("\n=== Analysis Complete ===\n")
 cat("Seed used:", SEED, "\n")
 cat("To reproduce: knit this Rmd with a fresh R session.\n")
+```
+
+---
+
+## Session Info
+
+```{r session-info}
+cat("=== R Session Information ===\n")
+sessionInfo()
 ```
 
 ---
