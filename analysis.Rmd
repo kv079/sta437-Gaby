@@ -306,21 +306,37 @@ legend("topleft", legend = "MVN reference line",
 ```
 
 ```{r mvn-mardia}
-# Mardia's test via psych::mardia() — stable API across all versions
-# MVN package API changed in 6.x; psych::mardia() is version-independent
-mardia_out <- psych::mardia(X_sub, plot = FALSE)
+# Mardia's test — implemented manually with MASS::ginv() to handle
+# singular covariance matrices (perfect multicollinearity in HAR features).
+# Formula: Mardia (1970), Biometrika 57(3):519-530.
 
-cat("=== Mardia's Multivariate Normality Test ===\n")
-cat(sprintf("Skewness : b1p = %8.4f,  chi² = %8.4f,  p = %.4f  => %s\n",
-            mardia_out$b1p,
-            mardia_out$chi.skew,
-            mardia_out$p.value.skew,
-            ifelse(mardia_out$p.value.skew > 0.05, "Normal", "Non-normal")))
-cat(sprintf("Kurtosis : b2p = %8.4f,  z    = %8.4f,  p = %.4f  => %s\n",
-            mardia_out$b2p,
-            mardia_out$kurtosis,
-            mardia_out$p.value.kurt,
-            ifelse(mardia_out$p.value.kurt > 0.05, "Normal", "Non-normal")))
+Xm   <- as.matrix(X_sub)
+n_m  <- nrow(Xm)
+p_m  <- ncol(Xm)
+xbar <- colMeans(Xm)
+D    <- sweep(Xm, 2, xbar)          # centred data
+Sinv <- MASS::ginv(cov(Xm))         # Moore-Penrose inverse
+
+A <- D %*% Sinv %*% t(D)           # n × n matrix of cross-distances
+
+# Skewness
+b1p      <- sum(A^3) / n_m^2
+chi_skew <- n_m * b1p / 6
+df_skew  <- p_m * (p_m + 1) * (p_m + 2) / 6
+p_skew   <- pchisq(chi_skew, df = df_skew, lower.tail = FALSE)
+
+# Kurtosis
+b2p    <- sum(diag(A)^2) / n_m
+z_kurt <- (b2p - p_m * (p_m + 2)) / sqrt(8 * p_m * (p_m + 2) / n_m)
+p_kurt <- 2 * pnorm(-abs(z_kurt))
+
+cat("=== Mardia's Multivariate Normality Test (n=1000 subsample) ===\n")
+cat(sprintf("Skewness : b1p = %8.4f,  chi²(%d) = %8.4f,  p = %.4e  => %s\n",
+            b1p, df_skew, chi_skew, p_skew,
+            ifelse(p_skew > 0.05, "Normal", "Non-normal")))
+cat(sprintf("Kurtosis : b2p = %8.4f,  z = %8.4f,         p = %.4e  => %s\n",
+            b2p, z_kurt, p_kurt,
+            ifelse(p_kurt > 0.05, "Normal", "Non-normal")))
 
 cat("\n=== Shapiro-Wilk marginal normality (n=200 subsample) ===\n")
 set.seed(SEED)
