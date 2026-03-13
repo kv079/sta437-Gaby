@@ -63,7 +63,7 @@ library(MASS)           # ginv() — Moore-Penrose pseudoinverse
 
 # ── Reproducibility ───────────────────────────────────────────────────────────
 SEED <- 437
-RNGkind("Mersenne-Twister", "Rejection")  # R >= 3.6 default; explicit for portability
+RNGkind("Mersenne-Twister", "Inversion", "Rejection")  # kind / normal.kind / sample.kind (R >= 3.6)
 set.seed(SEED)
 
 # ── Output directories ────────────────────────────────────────────────────────
@@ -993,7 +993,7 @@ sessionInfo()
 
 ## Reproducibility Statement
 
-All stochastic operations (`fa()`, `fastICA()`, `sample()`, `rnorm()`) call `set.seed(437)` immediately before execution. `RNGkind("Mersenne-Twister", "Rejection")` is declared explicitly for cross-version portability (R ≥ 3.6). Chunk caching is disabled (`cache = FALSE`) to guarantee full re-execution on every knit. This document knits sequentially top-to-bottom with **no manual intervention**. The only path to change on a different machine is `DATA_PATH <- "har_data.csv"`.
+All stochastic operations (`fa()`, `fastICA()`, `sample()`, `rnorm()`) call `set.seed(437)` immediately before execution. `RNGkind("Mersenne-Twister", "Inversion", "Rejection")` is declared explicitly for cross-version portability (R ≥ 3.6). Chunk caching is disabled (`cache = FALSE`) to guarantee full re-execution on every knit. This document knits sequentially top-to-bottom with **no manual intervention**. The only path to change on a different machine is `DATA_PATH <- "har_data.csv"`.
 
 **Required R packages:**
 ```
