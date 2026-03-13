@@ -305,9 +305,9 @@ legend("topleft", legend = "MVN reference line",
 ```{r mvn-mardia}
 # Mardia's test (skewness + kurtosis) via MVN package
 # Uses a subsample for speed; adjust size if needed
-mvn_result <- mvn(data    = X_sub,
-                  mvnTest = "mardia",
-                  univariateTest = "SW",
+mvn_result <- mvn(data             = X_sub,
+                  test             = "mardia",
+                  univTest         = "SW",
                   multivariatePlot = "none")
 
 cat("=== Mardia's Multivariate Normality Test ===\n")
