@@ -306,15 +306,21 @@ legend("topleft", legend = "MVN reference line",
 ```
 
 ```{r mvn-mardia}
-# Mardia's test (skewness + kurtosis) via MVN package
-# Uses a subsample for speed; adjust size if needed
-mvn_result <- mvn(data             = X_sub,
-                  test             = "mardia",
-                  univTest         = "SW",
-                  multivariatePlot = "none")
+# Mardia's test via psych::mardia() — stable API across all versions
+# MVN package API changed in 6.x; psych::mardia() is version-independent
+mardia_out <- psych::mardia(X_sub, plot = FALSE)
 
 cat("=== Mardia's Multivariate Normality Test ===\n")
-print(mvn_result$multivariateNormality)
+cat(sprintf("Skewness : b1p = %8.4f,  chi² = %8.4f,  p = %.4f  => %s\n",
+            mardia_out$b1p,
+            mardia_out$chi.skew,
+            mardia_out$p.value.skew,
+            ifelse(mardia_out$p.value.skew > 0.05, "Normal", "Non-normal")))
+cat(sprintf("Kurtosis : b2p = %8.4f,  z    = %8.4f,  p = %.4f  => %s\n",
+            mardia_out$b2p,
+            mardia_out$kurtosis,
+            mardia_out$p.value.kurt,
+            ifelse(mardia_out$p.value.kurt > 0.05, "Normal", "Non-normal")))
 
 cat("\n=== Shapiro-Wilk marginal normality (n=200 subsample) ===\n")
 set.seed(SEED)
