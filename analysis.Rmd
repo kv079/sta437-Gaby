@@ -24,6 +24,7 @@ knitr::opts_chunk$set(
   echo    = TRUE,
   message = FALSE,
   warning = FALSE,
+  cache   = FALSE,   # never cache — ensures full re-execution on each knit
   fig.path = "figures/",
   dpi      = 150
 )
@@ -41,7 +42,7 @@ knitr::opts_chunk$set(
 # install.packages(c("tidyverse", "corrplot", "ggplot2", "psych",
 #                    "GPArotation", "FactoMineR", "factoextra",
 #                    "fastICA", "CCA", "MVN", "gridExtra", "viridis",
-#                    "RColorBrewer", "kableExtra", "patchwork"))
+#                    "RColorBrewer", "kableExtra", "patchwork", "MASS"))
 
 # ── Load packages ─────────────────────────────────────────────────────────────
 library(tidyverse)      # dplyr, ggplot2, readr, tidyr
@@ -58,6 +59,7 @@ library(viridis)        # colour scales
 library(RColorBrewer)   # palettes
 library(kableExtra)     # kable() formatting
 library(patchwork)      # combine ggplot panels
+library(MASS)           # ginv() — Moore-Penrose pseudoinverse
 
 # ── Reproducibility ───────────────────────────────────────────────────────────
 SEED <- 437
@@ -815,14 +817,14 @@ fig10
 ```{r ica-kurtosis}
 cat("ICA component excess kurtosis (Gaussian = 0):\n")
 for (i in seq_len(NFACTORS_BEST)) {
-  k_val <- kurtosis(S_ica[, i]) - 3   # psych::kurtosis returns raw; subtract 3 for excess
+  k_val <- kurtosis(S_ica[, i])   # psych::kurtosis already returns excess kurtosis (raw - 3)
   cat(sprintf("  IC%d: %.4f\n", i, k_val))
 }
 
 cat("\nPCA component excess kurtosis:\n")
 scores_full <- pca_full$x
 for (i in seq_len(NFACTORS_BEST)) {
-  k_val <- kurtosis(scores_full[, i]) - 3
+  k_val <- kurtosis(scores_full[, i])   # psych::kurtosis already returns excess kurtosis
   cat(sprintf("  PC%d: %.4f\n", i, k_val))
 }
 ```
@@ -991,18 +993,18 @@ sessionInfo()
 
 ## Reproducibility Statement
 
-All analyses use `set.seed(437)`. This document knits sequentially top-to-bottom with **no manual intervention**. The only path to change on a different machine is `DATA_PATH <- "har_data.csv"`.
+All stochastic operations (`fa()`, `fastICA()`, `sample()`, `rnorm()`) call `set.seed(437)` immediately before execution. `RNGkind("Mersenne-Twister", "Rejection")` is declared explicitly for cross-version portability (R ≥ 3.6). Chunk caching is disabled (`cache = FALSE`) to guarantee full re-execution on every knit. This document knits sequentially top-to-bottom with **no manual intervention**. The only path to change on a different machine is `DATA_PATH <- "har_data.csv"`.
 
 **Required R packages:**
 ```
 tidyverse, corrplot, psych, GPArotation, FactoMineR, factoextra,
-fastICA, CCA, MVN, gridExtra, viridis, RColorBrewer, kableExtra, patchwork
+fastICA, CCA, MVN, MASS, gridExtra, viridis, RColorBrewer, kableExtra, patchwork
 ```
 Install with:
 ```r
 install.packages(c("tidyverse", "corrplot", "psych", "GPArotation",
                    "FactoMineR", "factoextra", "fastICA", "CCA",
-                   "MVN", "gridExtra", "viridis", "RColorBrewer",
+                   "MVN", "MASS", "gridExtra", "viridis", "RColorBrewer",
                    "kableExtra", "patchwork"))
 ```
 
