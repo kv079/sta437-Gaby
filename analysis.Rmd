@@ -107,6 +107,21 @@ cat("Duplicates :", sum(duplicated(har)), "\n\n")
 
 cat("Activity distribution:\n")
 print(table(har$activity))
+
+# Summary table for report
+data.frame(
+  Metric = c("Sample size", "Numeric variables retained",
+             "Missing values", "Duplicate rows"),
+  Value  = c(
+    format(nrow(har), big.mark = ","),
+    ncol(har) - 1L,
+    sum(is.na(har)),
+    sum(duplicated(har))
+  )
+) %>%
+  kable(caption = "Data audit summary") %>%
+  kable_styling(bootstrap_options = "condensed",
+                full_width = FALSE, font_size = 11)
 ```
 
 > **Data audit summary:**
@@ -367,9 +382,10 @@ interp <- dplyr::case_when(
   kmo_result$MSA >= 0.80 ~ "meritorious",
   kmo_result$MSA >= 0.70 ~ "middling",
   kmo_result$MSA >= 0.60 ~ "mediocre",
-  TRUE                   ~ "miserable"
+  kmo_result$MSA >= 0.50 ~ "miserable (barely adequate)",
+  TRUE                   ~ "unacceptable (< 0.50)"
 )
-cat("  → KMO interpretation:", interp, "\n\n")
+cat("  → KMO interpretation:", interp, "\n")
 
 # Per-variable KMO
 kmo_per_var <- data.frame(
@@ -417,15 +433,21 @@ if (nrow(extreme_idx) > 0) {
 
 > **Assumption testing summary and method justification:**
 >
-> - **MVN:** The Mahalanobis-distance QQ-plot shows systematic departure from the chi²(33) reference line — the observed quantiles fan out well above the theoretical line at high distances, indicating heavy tails. Mardia's skewness and kurtosis tests both reject MVN (p ≪ 0.05). This is expected: HAR features are derived means of physical signals constrained to [−1, 1], so exact Gaussian behaviour is not expected.
+> | Diagnostic | Result | Implication |
+> |-----------|--------|-------------|
+> | Overall KMO | 0.500 (barely adequate) | Shared variance exists; FA is justifiable but borderline |
+> | Bartlett's test | p < 0.001 | Correlation matrix significantly ≠ identity; FA/PCA appropriate |
+> | Mardia skewness | p < 0.001 | MVN violated |
+> | Mardia kurtosis | p < 0.001 | MVN violated |
+> | Pairs with \|r\| > 0.95 | 42 (max \|r\| = 1.000) | Near-singular covariance; ML FA unsuitable |
 >
-> - **KMO ≥ 0.80 (meritorious):** Indicates substantial shared variance among variables — a necessary condition for FA to be meaningful. This is the primary statistical justification for pursuing FA over PCA-only.
+> - **MVN:** Both Mardia tests reject multivariate normality (p ≪ 0.05). The Mahalanobis QQ-plot shows systematic upward deviation, confirming heavy tails. This rules out ML-based FA (which assumes MVN) and motivates ICA as a complementary method.
 >
-> - **Bartlett p ≪ 0.05:** The correlation matrix is significantly non-identity, confirming that factor extraction will account for real inter-variable relationships.
+> - **KMO = 0.500:** This is the minimum acceptable threshold by Kaiser's guidelines ("miserable/barely adequate"). However, Bartlett's test (p < 0.001) confirms the correlation matrix is far from identity, and the block structure in the heatmap provides substantive evidence of shared latent variance. FA is therefore pursued with the caveat that the KMO is weak.
 >
-> - **Multicollinearity:** Some pairs show |r| > 0.95 (near-perfect collinearity). This causes the sample covariance matrix to be near-singular, which is why ML-based FA (which requires matrix inversion) is replaced by **Minimum Residuals (minres)** FA — a more robust OLS-based estimator that does not require a positive-definite covariance matrix.
+> - **42 pairs with |r| > 0.95:** Near-perfect collinearity renders the sample covariance matrix near-singular (max |r| = 1.000). This is why **Minimum Residuals (minres)** FA replaces ML FA — minres does not require matrix inversion and converges reliably under multicollinearity (Briggs & MacCallum, 2003).
 >
-> **Choice of FA over pure PCA:** FA explicitly models a measurement-error structure (unique variances), directly answering "what latent processes generate these features?" PCA is retained as a variance-accounting baseline. **Choice to include ICA:** Given non-MVN data, ICA can recover statistically independent (rather than uncorrelated) components — providing a complementary view of whether the FA factors reflect genuinely independent sensor processes or merely uncorrelated ones.
+> **Choice of FA over pure PCA:** FA models unique measurement error per variable, directly answering "what latent processes generate these features?" PCA is retained as a variance-accounting baseline. **Choice to include ICA:** Given non-MVN data, ICA can recover statistically independent (not merely uncorrelated) components — a complementary check on whether FA factors reflect genuinely independent sensor processes.
 
 ---
 
@@ -647,7 +669,7 @@ NFACTORS_LIST <- c(4, 5, 6)
 NFACTORS_BEST <- 6
 ```
 
-> **Dimension selection rationale:** Both the Kaiser criterion and Horn's parallel analysis converge on **6 factors**. The scree plot shows a clear elbow after PC6, after which eigenvalues approach 1 and the cumulative variance curve flattens. A 4-factor solution explains less variance and forces some frequency-domain features to cross-load; a 7+ solution produces factors dominated by single variables (Heywood-like). The 6-factor solution is therefore selected as it maximises communality and produces interpretable, sensor-domain-aligned factors. This is validated in the robustness section.
+> **Dimension selection rationale:** Both the Kaiser criterion and Horn's parallel analysis converge on **6 factors**. The scree plot shows a very sharp drop after PC1 (which alone explains **53.12%** of total variance), followed by a more gradual taper through PC6 (**77.02%** cumulative). This indicates one dominant global-motion dimension plus several additional dimensions capturing orientation, rotation, and domain-specific signals. Selecting 6 is not treated as a purely mechanical decision — the robustness section compares 5-factor and 6-factor solutions to assess whether 6 is substantively cleaner. The choice is ultimately justified by the combination of statistical criteria and interpretability.
 
 ---
 
@@ -793,30 +815,48 @@ if (!is.null(phi)) {
 ```{r ss-comparison}
 loads_unrot <- fa_unrot$loadings[]
 
-cat(sprintf("%-12s  simple-structure score = %.3f\n",
-            "Unrotated", simple_structure_score(loads_unrot)))
-cat(sprintf("%-12s  simple-structure score = %.3f\n",
-            "Varimax",   simple_structure_score(loads_varimax)))
-cat(sprintf("%-12s  simple-structure score = %.3f\n",
-            "Promax",    simple_structure_score(loads_promax)))
+ss_unrot  <- simple_structure_score(loads_unrot)
+ss_var    <- simple_structure_score(loads_varimax)
+ss_pro    <- simple_structure_score(loads_promax)
+
+cat(sprintf("%-12s  simple-structure score = %.3f\n", "Unrotated", ss_unrot))
+cat(sprintf("%-12s  simple-structure score = %.3f\n", "Varimax",   ss_var))
+cat(sprintf("%-12s  simple-structure score = %.3f\n", "Promax",    ss_pro))
+
+# Count cross-loadings (|loading| > 0.30 on 2+ factors)
+count_cross <- function(lm) {
+  sum(apply(abs(lm), 1, function(r) sum(r > 0.30)) >= 2)
+}
+
+# Summary comparison table
+data.frame(
+  Solution = c("Unrotated (6)", "Varimax (6)", "Promax (6)"),
+  `Simple-Structure Score` = round(c(ss_unrot, ss_var, ss_pro), 3),
+  `Cross-Loadings` = c(count_cross(loads_unrot),
+                       count_cross(loads_varimax),
+                       count_cross(loads_promax)),
+  check.names = FALSE
+) %>%
+  kable(caption = "Comparison of six-factor FA solutions") %>%
+  kable_styling(bootstrap_options = "condensed",
+                full_width = FALSE, font_size = 11)
 ```
 
 > **FA interpretation — factor naming (based on varimax loadings):**
 >
-> Varimax rotation is chosen as the primary rotation because HAR factors are expected to correspond to physically distinct sensor channels (accelerometer vs. gyroscope, time vs. frequency domain), which should be approximately orthogonal — consistent with the varimax orthogonality assumption. Promax is applied as a check; the low inter-factor correlations (|φ| < 0.30) confirm that the orthogonal assumption is reasonable.
+> Varimax rotation is chosen as the primary rotation because HAR factors are expected to correspond to physically distinct sensor channels, which should be approximately orthogonal. Promax is applied as a check; the largest promax inter-factor correlation is **0.482** (moderate), so the orthogonal assumption is reasonable but not perfect. In this case, the varimax and promax pattern matrices are nearly identical, so varimax is retained as the primary solution.
 >
-> The six factors map cleanly onto known signal processing domains in the HAR dataset:
+> The simple-structure score increases from **0.576** (unrotated) to **0.906** (varimax), and both varimax and promax yield only **2 cross-loading variables** above the 0.30 cutoff. The six factors map onto the following sensor domains:
 >
-> | Factor | Proposed name | Key variables | Physical interpretation |
-> |--------|--------------|---------------|------------------------|
-> | **F1** | *Freq-domain body acceleration* | fBodyAcc-XYZ, fBodyAccJerk-XYZ | FFT magnitudes of linear body motion during dynamic activities |
-> | **F2** | *Time-domain body rotation* | tBodyGyro-XYZ, tBodyGyroJerk-XYZ | Angular velocity and jerk from gyroscope; distinguishes rotation patterns |
-> | **F3** | *Gravitational posture* | tGravityAcc-XYZ | Static gravitational component; separates lying/sitting from standing/walking |
-> | **F4** | *Freq-domain gyroscope* | fBodyGyro-XYZ | Frequency content of rotation; complementary to F2 in spectral domain |
-> | **F5** | *Body acceleration magnitude* | tBodyAccMag, tBodyAccJerkMag | Scalar magnitude of linear acceleration (direction-invariant motion intensity) |
-> | **F6** | *Gyroscope magnitude* | tBodyGyroMag, tBodyGyroJerkMag, fBodyGyroMag | Magnitude of rotational motion; captures spin intensity across all axes |
+> | Factor | Proposed name | Top-loading variables | Physical interpretation |
+> |--------|--------------|----------------------|------------------------|
+> | **F1** | *Jerk / magnitude intensity* | tBAJMg-m (+0.981), fBAJMg-m (+0.976), fBAJ-m-X (+0.967), fBAMg-m (+0.966) | Overall motion intensity via jerk and frequency-domain magnitude; dominant during dynamic activities |
+> | **F2** | *Gravity orientation* | tGravA-m-X (+0.868), tGravA-m-Y (−0.749), tGravA-m-Z (−0.642) | Static gravitational component; encodes body posture angle (lying vs. standing) |
+> | **F3** | *Body gyroscope (rotation)* | tBG-m-X (−0.911), tBG-m-Y (+0.785), tBG-m-Z (+0.296) | Angular velocity from gyroscope; distinguishes directional rotation patterns |
+> | **F4** | *Body acceleration jerk* | tBAJ-m-Y (+0.557), tBAJ-m-X (−0.488), tBAJ-m-Z (+0.407) | Derivative of linear acceleration; captures sudden directional changes in motion |
+> | **F5–F6** | *Weaker residual structure* | Smaller loadings (max 0.258 for F6) | Statistically retained by parallel analysis but substantively weak; should be interpreted with caution |
 >
-> **Communalities** are high for most features (> 0.70), confirming that the 6-factor model captures the dominant variance structure. Features with lower communality are typically magnitude features that spread variance across factors.
+> **Communality note:** 10 variables had communality below 0.40 and 10 had uniqueness above 0.60. The 6-factor model is informative but not a complete explanation of all variance — some features have substantial unique variance not shared with others.
 
 ---
 
@@ -881,14 +921,14 @@ for (i in seq_len(NFACTORS_BEST)) {
 
 > **ICA vs FA comparison:**
 >
-> ICA (fastICA with logcosh contrast, 6 components) seeks statistically *independent* — not merely uncorrelated — sources by exploiting non-Gaussianity. The HAR features are clearly non-Gaussian (Mardia tests rejected MVN; most marginal kurtosis values deviate from 0), which means ICA's independence assumption is more appropriate than FA's Gaussianity assumption in principle.
+> ICA (fastICA with logcosh contrast, 6 components) seeks statistically *independent* — not merely uncorrelated — sources by exploiting non-Gaussianity. The recovered ICA components have substantial excess kurtosis (range: **−1.19 to 40.73**), confirming that the data are genuinely non-Gaussian and that ICA has a meaningful signal to separate.
 >
-> However, comparing the mixing-matrix heatmap (ICA, Fig. 10) with the varimax loadings heatmap (FA, Fig. 8) shows that **both methods identify similar variable groupings**: frequency-domain acceleration, gyroscope rotation, and gravity form visually distinct clusters in both. The key differences are:
+> The ICA mixing matrix (Fig. 10) and the FA varimax loadings (Fig. 8) identify broadly similar variable groupings — jerk/magnitude, gravity, and gyroscope features form distinct clusters in both. However, the ICA solution is harder to interpret in domain terms: ICA components are unordered and sign-ambiguous, and the mixing matrix does not provide communalities or uniquenesses.
 >
-> - **FA** provides communalities, uniquenesses, and factor scores with clear statistical meaning; rotation is deterministic (varimax/promax) and reproducible.
-> - **ICA** is equivariant to component order and sign, making inter-run comparison harder; but its kurtosis statistics (reported above) confirm non-Gaussianity of the recovered components — consistent with the idea that different physical activity modes generate distinct, non-Gaussian signal patterns.
+> - **FA** is the primary method because it provides communalities, uniquenesses, and interpretable rotation; its factor structure aligns naturally with the known sensor-domain partitions.
+> - **ICA** is the complementary check. The consistency between FA factors and ICA components — recovered under completely different criteria (simple structure vs. statistical independence) — strengthens confidence in the latent structure.
 >
-> **Primary method: FA (minres + varimax).** FA is preferred because (1) the data has known sensor-domain structure that matches a factorial model; (2) communalities directly quantify measurement quality for each feature; (3) rotation provides a more interpretable simple structure. ICA is retained as a convergent validity check — the consistency between FA factors and ICA components strengthens confidence in the recovered latent structure.
+> **Primary method: FA (minres + varimax).** ICA confirms that the factors are not merely mathematical artefacts but reflect genuinely non-Gaussian independent sources in the sensor signals.
 
 ---
 
@@ -958,11 +998,11 @@ cat("  → Lower values indicate more stable factor structure\n")
 
 > **Robustness summary:**
 >
-> - **Factor number:** Comparing solutions with k = 4, 5, 6 factors shows that total communality increases monotonically, while the marginal gain from 5 → 6 factors is substantial but 6 → 7 is negligible. The simple-structure score also peaks at 6 factors. Both Kaiser (λ > 1) and parallel analysis (observed > 95th-percentile random) converge on 6, providing multi-criterion support.
+> - **Factor number:** The 5-factor and 6-factor solutions have nearly identical simple-structure scores (**0.906** for both), although the 6-factor solution has slightly higher total communality. The difference is therefore primarily about interpretability. Six factors are retained as the primary solution because parallel analysis supports it and because the additional factor captures residual gyroscope/magnitude variance — but the **5-factor solution is a plausible alternative** and should be acknowledged.
 >
-> - **Rotation:** Varimax and Promax yield nearly identical simple-structure scores. The maximum cross-loading under promax is not substantially lower than varimax, and the promax inter-factor correlations (|φ| < 0.30) confirm that factors are empirically near-orthogonal — further validating the varimax choice.
+> - **Rotation:** Varimax and Promax produce very similar pattern matrices (SS score 0.906 for both). The largest promax inter-factor correlation is **0.482** (moderate), meaning the factors are not perfectly orthogonal, but the varimax approximation is still reasonable. Both rotations agree on the key structure.
 >
-> - **Subsample stability:** The mean SD of loadings across five 50%-subsample splits is low (< 0.05 for most loadings), indicating the factor structure is stable and not driven by a subset of observations. The highest instability appears in F5–F6 (magnitude features), which have moderate communalities and some conceptual overlap — a known limitation of magnitude-based HAR features.
+> - **Subsample stability:** The mean absolute factor alignment across half-splits is **0.847** and the mean top-variable Jaccard overlap is **0.429**, indicating acceptable stability. The factor structure is not sensitive to any particular subset of the 10,299 observations.
 
 ---
 
@@ -975,25 +1015,49 @@ cat("  → Lower values indicate more stable factor structure\n")
 block_t_cols <- feature_names[str_starts(feature_names, "t")]
 block_f_cols <- feature_names[str_starts(feature_names, "f")]
 
-cat(sprintf("Block A (time-domain) : %d variables\n", length(block_t_cols)))
-cat(sprintf("Block B (freq-domain) : %d variables\n", length(block_f_cols)))
+cat(sprintf("Block A (time-domain, initial) : %d variables\n", length(block_t_cols)))
+cat(sprintf("Block B (freq-domain)          : %d variables\n", length(block_f_cols)))
 
-X_t <- as.matrix(X_df[, block_t_cols])
-X_f <- as.matrix(X_df[, block_f_cols])
+X_t_raw <- as.matrix(X_df[, block_t_cols])
+X_f     <- as.matrix(X_df[, block_f_cols])
+
+# ── Remove linearly dependent columns from the time-domain block ─────────────
+# tGravityAccMag-mean() is a perfect linear function of the other gravity
+# features, making the time-block matrix singular and cancor() fail.
+# Detect and drop any linearly dependent column via QR decomposition.
+qr_t <- qr(X_t_raw, tol = 1e-9)
+keep_t <- qr_t$pivot[seq_len(qr_t$rank)]
+dropped_t <- block_t_cols[setdiff(seq_along(block_t_cols), keep_t)]
+if (length(dropped_t) > 0) {
+  cat(sprintf("\nDropped %d linearly dependent time-domain variable(s):\n", length(dropped_t)))
+  for (d in dropped_t) cat("  ", d, "\n")
+}
+
+X_t <- X_t_raw[, keep_t, drop = FALSE]
+cat(sprintf("Block A (time-domain, after removing linear deps): %d variables\n", ncol(X_t)))
 
 # CCA — use cancor() (base R, no package needed)
-n_cc     <- min(4, length(block_f_cols))
+n_cc     <- min(4, ncol(X_f))
 cca_res  <- cancor(X_t, X_f)
 
 cat("\nCanonical correlations (time vs frequency domain):\n")
 for (i in seq_len(n_cc)) {
   cat(sprintf("  Canonical variate %d: r = %.4f\n", i, cca_res$cor[i]))
 }
+
+# Summary table
+data.frame(
+  CanonicalVariate = paste0("CV", 1:n_cc),
+  Correlation      = round(cca_res$cor[1:n_cc], 4)
+) %>%
+  kable(caption = "First four canonical correlations (time vs frequency domain)") %>%
+  kable_styling(bootstrap_options = "condensed",
+                full_width = FALSE, font_size = 11)
 ```
 
 ## CCA Score Plot
 
-```{r fig11-cca, fig.width=7, fig.height=6, fig.cap="**Figure 11.** CCA score plot: first canonical variates from the time-domain block (x-axis) vs. frequency-domain block (y-axis), coloured by activity. The high first canonical correlation (r > 0.95) and the near-diagonal clustering of points confirm that both sensor domains carry essentially the same latent information about activity type. Dynamic activities (WALKING variants) appear at one extreme of the canonical variate, static activities at the other — consistent with FA Factor 3 (gravity/posture) driving the primary axis of variation."}
+```{r fig11-cca, fig.width=7, fig.height=6, fig.cap="**Figure 11.** CCA score plot: first canonical variates from the time-domain block (x-axis) vs. frequency-domain block (y-axis), coloured by activity. The first canonical correlation (r = 0.9975) is near-perfect, and the near-diagonal clustering confirms that both sensor domains encode essentially the same latent activity structure. Dynamic activities (WALKING variants) separate clearly from static activities (SITTING/STANDING/LAYING) along the first canonical axis — consistent with FA Factor 2 (gravity orientation) and Factor 1 (jerk/magnitude intensity) driving the primary variation."}
 # Canonical variates
 U <- X_t %*% cca_res$xcoef   # time-domain canonical scores
 V <- X_f %*% cca_res$ycoef   # freq-domain canonical scores
@@ -1022,13 +1086,13 @@ fig11
 
 > **CCA discussion:**
 >
-> The HAR features split naturally into a *time-domain* block (tBody\*, tGravity\*, 20 variables) and a *frequency-domain* block (fBody\*, 13 variables), since frequency features are derived from time-domain signals via the Short-Time Fourier Transform. This is a theoretically motivated, non-arbitrary partition — making CCA appropriate here.
+> CCA is appropriate here because the variables admit a meaningful substantive partition: a **time-domain block** (tBody\*, tGravity\*, originally 20 variables — one removed as linearly dependent) and a **frequency-domain block** (fBody\*, 13 variables). Frequency-domain features are derived from time-domain signals via the Short-Time Fourier Transform, so this is a theoretically motivated, non-arbitrary split.
 >
-> The first canonical correlation is very high (r > 0.95 expected), confirming that both sensor domains share a dominant common latent structure — the same underlying physical motion is simultaneously captured in both the time and frequency representations. The score plot (Fig. 11) shows that the first canonical pair cleanly separates dynamic activities (WALKING variants) from static activities (SITTING/STANDING/LAYING), consistent with the FA interpretation where gravitational and dynamic acceleration load on different factors.
+> The first four canonical correlations are **r = 0.9975, 0.9373, 0.9164, 0.6168**. The first three are exceptionally high, confirming that both blocks encode the same broad latent structure. This is the CCA analogue of what FA and the correlation heatmap show: the 33 features are not 33 independent measurements — they are multiple redundant views of ~6 underlying physical processes, measured in both time and frequency domains simultaneously.
 >
-> The high canonical correlations also explain *why* the HAR data is so multicollinear: many of the 33 features are essentially different views of the same 6–7 underlying physical processes, measured redundantly in both time and frequency domains. FA and CCA together confirm this structure.
+> The score plot (Fig. 11) shows that CV1 cleanly separates dynamic from static activities — consistent with FA Factors 1 (jerk/magnitude) and 2 (gravity orientation) being the dominant sources of variation. The drop in canonical correlation from CV3 (0.916) to CV4 (0.617) suggests that the fourth canonical dimension captures more residual, activity-specific variation.
 >
-> **Multivariate regression is not pursued** because `activity` is a 6-class *nominal* label, not a continuous multivariate response. Canonical Discriminant Analysis (LDA) would be the appropriate framework for predicting group membership, but falls outside the STA437 Weeks 1–8 toolkit. If the goal were prediction, the 6 FA factor scores would serve as a dimensionality-reduced feature set.
+> **Multivariate regression is not pursued** because `activity` is a 6-class *nominal* label. LDA/discriminant analysis would be appropriate for group prediction but falls outside the STA437 Weeks 1–8 toolkit.
 
 ---
 
@@ -1050,25 +1114,17 @@ cat("To reproduce: knit this Rmd with a fresh R session.\n")
 
 # Conclusions
 
-This analysis reveals a clear, stable **6-factor latent structure** underlying the 33 HAR sensor features. The six factors correspond directly to physically interpretable sensor-domain dimensions:
+This analysis finds clear latent structure in the HAR feature set. The key results across all methods converge on the same story: the 33 observed features are not independent measurements but overlapping summaries of a smaller set of underlying physical movement processes.
 
-1. **Frequency-domain body acceleration** — captures the spectral energy of linear motion during dynamic activities.
-2. **Time-domain body rotation** — angular velocity and jerk from the gyroscope.
-3. **Gravitational posture** — the static gravitational component separating lying/sitting from standing/walking.
-4. **Frequency-domain gyroscope** — spectral content of rotation.
-5. **Body acceleration magnitude** — direction-invariant intensity of linear acceleration.
-6. **Gyroscope magnitude** — intensity of rotational motion across all axes.
+**Summary of findings:**
 
-**Key analytical findings:**
+- **PCA** confirms strong low-dimensional structure: PC1 alone explains 53.12% of variance, and 6 PCs explain 77.02%.
+- **FA (minres + varimax)** recovers 4 clearly interpretable factors — jerk/magnitude intensity (F1), gravity orientation (F2), body gyroscope rotation (F3), and body acceleration jerk (F4) — plus 2 weaker factors (F5–F6). The 6th factor has a largest loading of only 0.258 and is statistically supported but substantively weak.
+- **ICA** corroborates FA: independent components with excess kurtosis ranging from −1.19 to 40.73 align with the same sensor-domain groupings, confirming the factors are not mere mathematical artefacts.
+- **CCA** confirms that time-domain and frequency-domain blocks share near-identical latent structure (CV1: r = 0.9975), explaining the extreme multicollinearity in the data.
+- **Robustness:** the 5-factor and 6-factor solutions have identical simple-structure scores (0.906); 6 factors is the primary solution (supported by parallel analysis) but 5 factors is a plausible alternative. The factor structure is stable across rotations and random subsamples.
 
-- **MVN fails**, ruling out ML-based FA; **minres FA** is the appropriate estimator and converges reliably.
-- **KMO ≥ 0.80** and **Bartlett p ≪ 0.05** confirm that factor analysis is statistically justified.
-- **Varimax rotation** achieves near-perfect simple structure (most variables load on exactly one factor), and promax confirms that the six factors are empirically near-orthogonal.
-- **ICA corroborates FA**: despite using a fundamentally different criterion (statistical independence vs. simple structure), both methods recover the same sensor-domain groupings — a strong convergent validity result.
-- **CCA confirms time/frequency redundancy**: the time-domain and frequency-domain feature blocks are almost perfectly correlated in canonical space (r > 0.95), explaining the extreme multicollinearity and confirming that the 33 features represent only ~6 genuinely distinct sources of information.
-- **Robustness checks**: the 6-factor solution is stable across factor numbers (k = 4–6), rotation methods, and random half-splits of the data.
-
-**Limitation:** the HAR features are pre-computed means from windowed signals, discarding within-window temporal dynamics. A more complete analysis would apply multivariate methods to the raw time-series. Additionally, the 6 factors explain most but not all variance (communalities for some magnitude features are moderate, ≈ 0.60), suggesting that a small residual factor structure may exist in the magnitude features.
+**Limitation:** the HAR features are pre-engineered means from windowed signals. The latent dimensions reflect structure in the *feature space*, not necessarily unique physical mechanisms. The KMO of 0.500 is at the minimum acceptable threshold, meaning the FA results should be treated as informative rather than definitive. Raw time-series data would enable a more complete multivariate analysis.
 
 ---
 
